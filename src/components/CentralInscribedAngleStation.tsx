@@ -19,29 +19,37 @@ function angleBetween(o: Pt, a: Pt, b: Pt): number {
   return ang;
 }
 
-// SVG arc along the circle between two angles (degrees), going the short way
-// when sweepFlag=1 from startDeg to endDeg (handles wrap by normalizing end).
-function circleArcPath(
+// Angular distance going clockwise (increasing deg) from `from` to `to` (0..360).
+function clockwiseDelta(from: number, to: number): number {
+  let d = (to - from) % 360;
+  if (d < 0) d += 360;
+  return d;
+}
+
+// SVG arc along the circle from fromDeg to toDeg. `clockwise` selects the
+// direction (increasing-deg = visually clockwise in SVG's y-down system).
+function circleArc(
   cx: number,
   cy: number,
   r: number,
-  startDeg: number,
-  endDeg: number,
-  sweepFlag = 1
+  fromDeg: number,
+  toDeg: number,
+  clockwise: boolean
 ): string {
   const start = {
-    x: cx + r * Math.cos(toRad(startDeg)),
-    y: cy + r * Math.sin(toRad(startDeg)),
+    x: cx + r * Math.cos(toRad(fromDeg)),
+    y: cy + r * Math.sin(toRad(fromDeg)),
   };
   const end = {
-    x: cx + r * Math.cos(toRad(endDeg)),
-    y: cy + r * Math.sin(toRad(endDeg)),
+    x: cx + r * Math.cos(toRad(toDeg)),
+    y: cy + r * Math.sin(toRad(toDeg)),
   };
-  let delta = endDeg - startDeg;
-  if (sweepFlag === 1 && delta < 0) delta += 360;
-  if (sweepFlag === 0 && delta > 0) delta -= 360;
-  const largeArc = Math.abs(delta) > 180 ? 1 : 0;
-  return `M ${start.x} ${start.y} A ${r} ${r} 0 ${largeArc} ${sweepFlag} ${end.x} ${end.y}`;
+  const delta = clockwise
+    ? clockwiseDelta(fromDeg, toDeg)
+    : 360 - clockwiseDelta(fromDeg, toDeg);
+  const largeArc = delta > 180 ? 1 : 0;
+  const sweep = clockwise ? 1 : 0;
+  return `M ${start.x} ${start.y} A ${r} ${r} 0 ${largeArc} ${sweep} ${end.x} ${end.y}`;
 }
 
 // Small angle-indicator arc at vertex v, between rays v->a and v->b.
@@ -74,13 +82,6 @@ const pointOnCircle = (deg: number): Pt => ({
   y: CY + R * Math.sin(toRad(deg)),
 });
 
-// Angular distance going clockwise from `from` to `to` (0..360).
-function clockwiseDelta(from: number, to: number): number {
-  let d = (to - from) % 360;
-  if (d < 0) d += 360;
-  return d;
-}
-
 type DragTarget = "A" | "B" | "P" | null;
 
 export default function CentralInscribedAngleStation() {
@@ -95,17 +96,28 @@ export default function CentralInscribedAngleStation() {
   const O = { x: CX, y: CY };
   const P = pointOnCircle(pDeg);
 
-  const minorCentral = toDeg(angleBetween(O, A, B));
+  // angleBetween returns a directed angle in [0,360); take the smaller one.
+  const rawCentral = toDeg(angleBetween(O, A, B));
+  const minorCentral = Math.min(rawCentral, 360 - rawCentral);
   const majorCentral = 360 - minorCentral;
 
-  // P is "on the minor arc AB" when, going clockwise from A to B the short way,
-  // P lies between them. Use clockwise deltas.
-  const aToB = clockwiseDelta(aDeg, bDeg);
-  const aToP = clockwiseDelta(aDeg, pDeg);
-  const onMinorArc = aToP < aToB; // P within the A->B clockwise (minor) span
+  // P is on the minor arc iff P and the center O lie on opposite sides of
+  // chord AB (the center is always on the major-arc side).
+  const crossO = (B.x - A.x) * (O.y - A.y) - (B.y - A.y) * (O.x - A.x);
+  const crossP = (B.x - A.x) * (P.y - A.y) - (B.y - A.y) * (P.x - A.x);
+  const onMinorArc =
+    crossO !== 0 && crossP !== 0 && Math.sign(crossO) !== Math.sign(crossP);
 
   const centralDeg = onMinorArc ? majorCentral : minorCentral;
-  const inscribedDeg = toDeg(angleBetween(P, A, B));
+
+  const rawInscribed = toDeg(angleBetween(P, A, B));
+  const inscribedDeg = Math.min(rawInscribed, 360 - rawInscribed);
+
+  // Which A->B arc contains P? The subtended (highlighted) arc is the other one.
+  const cwAB = clockwiseDelta(aDeg, bDeg);
+  const cwAP = clockwiseDelta(aDeg, pDeg);
+  const pOnCwArc = cwAP < cwAB;
+  const subtendedClockwise = !pOnCwArc;
 
   const degFromPointer = useCallback((clientX: number, clientY: number) => {
     const svg = svgRef.current;
@@ -152,15 +164,9 @@ export default function CentralInscribedAngleStation() {
   };
 
   // Highlighted (subtended) arc = the arc NOT containing P.
-  const subtendedArcD = onMinorArc
-    ? circleArcPath(CX, CY, R, aDeg, bDeg, 0) // major arc: sweep CCW from A to B
-    : circleArcPath(CX, CY, R, bDeg, aDeg, 0); // minor arc CCW from B to A
-
+  const subtendedArcD = circleArc(CX, CY, R, aDeg, bDeg, subtendedClockwise);
   // Central-angle indicator arc at O (on the subtended side).
-  const centralArcD = onMinorArc
-    ? circleArcPath(O.x, O.y, 34, aDeg, bDeg, 0)
-    : circleArcPath(O.x, O.y, 34, bDeg, aDeg, 0);
-
+  const centralArcD = circleArc(O.x, O.y, 34, aDeg, bDeg, subtendedClockwise);
   const inscribedArcD = angleArcPath(P, A, B, 24);
 
   return (
